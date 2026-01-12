@@ -1,0 +1,146 @@
+import sys
+import time
+import threading
+import serial
+
+# ====== EDIT IF NEEDED ======
+PORT = "COM5"
+BAUD = 115200
+
+TOTAL_MINUTES = 10
+WAIT_AFTER_RUNEIS = 10     # seconds
+WAIT_AFTER_READEIS = 10    # seconds
+# ============================
+
+HELP = """
+Local commands:
+  /help    Show this help
+  /quit    Exit
+  /auto    Start auto EIS loop (10 minutes)
+  /stop    Stop auto mode and return to manual mode
+
+Device commands examples (type normally):
+  help
+  sensorsconnected
+  defaultsensor 3
+  setvbias 2
+  runeis
+  readeis
+
+Notes:
+  - This terminal sends CR ('\\r') as Enter (required by your CN0429).
+  - XON/XOFF flow control enabled (like PuTTY).
+"""
+
+def reader_thread(ser, stop_evt):
+    # Print whatever comes from the board continuously
+    while not stop_evt.is_set():
+        try:
+            data = ser.read(1024)  # returns after timeout or when bytes arrive
+            if data:
+                sys.stdout.write(data.decode(errors="ignore"))
+                sys.stdout.flush()
+        except Exception as e:
+            sys.stdout.write(f"\n[reader error] {e}\n")
+            sys.stdout.flush()
+            break
+
+def send_cmd(ser, line):
+    # IMPORTANT: CN0429 expects CR only, not CRLF
+    tx = line + "\r"
+    print("[TX]", repr(tx))
+    ser.write(tx.encode("ascii", errors="ignore"))
+    ser.flush()
+
+def main():
+    ser = serial.Serial(
+        port=PORT,
+        baudrate=BAUD,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        xonxoff=True,      # software flow control
+        rtscts=False,
+        dsrdtr=False,
+        timeout=0.2,
+        write_timeout=1,
+    )
+
+    print(f"Connected to {PORT} @ {BAUD} (XON/XOFF enabled).")
+    print("Connect the board + press RESET. Output will appear here.")
+    print(HELP)
+
+    stop_reader = threading.Event()
+    t = threading.Thread(target=reader_thread, args=(ser, stop_reader), daemon=True)
+    t.start()
+
+    auto_mode = False
+    stop_auto = threading.Event()
+
+    def auto_loop():
+        end_time = time.time() + TOTAL_MINUTES * 60
+        print(f"\n[AUTO] Started for {TOTAL_MINUTES} minutes.\n")
+        while time.time() < end_time and not stop_auto.is_set():
+            send_cmd(ser, "runeis")
+            time.sleep(WAIT_AFTER_RUNEIS)
+
+            send_cmd(ser, "readeis")
+            time.sleep(WAIT_AFTER_READEIS)
+
+        print("\n[AUTO] Finished (time done or /stop). Back to manual.\n")
+
+    auto_thread = None
+
+    try:
+        while True:
+            line = input("> ").strip()
+            if not line:
+                continue
+
+            low = line.lower()
+
+            if low == "/quit":
+                break
+
+            if low == "/help":
+                print(HELP)
+                continue
+
+            if low == "/auto":
+                if auto_mode:
+                    print("[AUTO] Already running. Use /stop first.")
+                    continue
+                auto_mode = True
+                stop_auto.clear()
+                auto_thread = threading.Thread(target=auto_loop, daemon=True)
+                auto_thread.start()
+                continue
+
+            if low == "/stop":
+                if not auto_mode:
+                    print("[AUTO] Not running.")
+                    continue
+                stop_auto.set()
+                auto_mode = False
+                continue
+
+            # Manual commands go to device
+            send_cmd(ser, line)
+
+    finally:
+        try:
+            stop_auto.set()
+        except Exception:
+            pass
+        try:
+            stop_reader.set()
+        except Exception:
+            pass
+        try:
+            ser.close()
+        except Exception:
+            pass
+        print("Closed.")
+
+if __name__ == "__main__":
+    main()

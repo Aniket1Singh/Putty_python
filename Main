@@ -1,0 +1,98 @@
+import sys
+import time
+import threading
+import serial
+
+PORT = "COM5"
+BAUD = 115200
+
+HELP = """
+Commands:
+  - Type anything and press Enter: it will be sent to the board.
+  - Special commands (local):
+      /help     show this help
+      /quit     exit
+      /runeis   send 'runeis'
+      /readeis  send 'readeis'
+Notes:
+  - This is a basic console terminal (not a GUI).
+  - Uses XON/XOFF software flow control (like your PuTTY setting).
+"""
+
+def reader_thread(ser, stop_evt):
+    # continuously print whatever the board sends
+    while not stop_evt.is_set():
+        try:
+            data = ser.read(1024)  # returns after timeout or when bytes arrive
+            if data:
+                sys.stdout.write(data.decode(errors="ignore"))
+                sys.stdout.flush()
+        except Exception as e:
+            sys.stdout.write(f"\n[reader error] {e}\n")
+            sys.stdout.flush()
+            break
+
+def main():
+    ser = serial.Serial(
+        port=PORT,
+        baudrate=BAUD,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        xonxoff=True,      # matches PuTTY Flow control = XON/XOFF [web:252]
+        rtscts=False,
+        dsrdtr=False,
+        timeout=0.2,
+        write_timeout=1,
+    )
+
+    print(f"Connected to {PORT} @ {BAUD} (XON/XOFF enabled).")
+    print("Connect the board + press RESET. Output will appear here.")
+    print(HELP)
+
+    stop_evt = threading.Event()
+    t = threading.Thread(target=reader_thread, args=(ser, stop_evt), daemon=True)
+    t.start()
+
+    try:
+        while True:
+            line = input("> ").strip()
+            if not line:
+                continue
+
+            low = line.lower()
+            if low == "/quit":
+                break
+            if low == "/help":
+                print(HELP)
+                continue
+            if low == "/runeis":
+                line = "runeis"
+            elif low == "/readeis":
+                line = "readeis"
+
+            
+           
+
+            tx = line + "\r"          # <-- change here
+            print("[TX]", repr(tx))
+            ser.write(tx.encode("ascii", errors="ignore"))
+            ser.flush()
+
+
+
+
+            # tiny delay can help some devices that don't like back-to-back writes
+            time.sleep(0.05)
+
+    finally:
+        stop_evt.set()
+        time.sleep(0.1)
+        try:
+            ser.close()
+        except Exception:
+            pass
+        print("Closed.")
+
+if __name__ == "__main__":
+    main()
